@@ -1,0 +1,29 @@
+{
+  "name": "rekordkaraoke-app",
+  "version": "1.0.0",
+  "description": "Karaoke lyrics sync with Rekordbox via rkbx_link",
+  "main": "src/server/index.js",
+  "scripts": {
+    "start": "node src/server/index.js",
+    "prefetch": "node src/server/scripts/prefetch.js",
+    "prefetch:all": "node src/server/scripts/prefetch.js --all",
+    "emulator": "node src/server/scripts/emulator.js",
+    "emulator:auto": "node src/server/scripts/emulator.js --auto",
+    "dev": "node src/server/index.js & node src/server/scripts/emulator.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steesann/RekordKaraoke-app.git"
+  },
+  "keywords": ["karaoke", "rekordbox", "dj", "lyrics"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ws": "^8.14.0"
+  },
+  "bugs": {
+    "url": "https://github.com/steesann/RekordKaraoke-app/issues"
+  },
+  "homepage": "https://github.com/steesann/RekordKaraoke-app#readme"
+}

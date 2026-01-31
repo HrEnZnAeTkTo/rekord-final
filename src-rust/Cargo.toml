@@ -1,0 +1,20 @@
+[package]
+name = "rkbx_osc"
+version = "0.1.0"
+edition = "2021"
+authors = ["Based on fjel/rkbx_os2l, modified for RekordKaraoke"]
+repository = "https://github.com/steesann/RekordKaraoke-app"
+description = "Rekordbox to OSC bridge for karaoke sync"
+
+[[bin]]
+name = "rkbx_osc"
+path = "src/main.rs"
+
+[dependencies]
+toy-arms = {version = "0.9.4", features = ["external"]}
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+serde_json = "1.0"
+rosc = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.9", features = ["winnt", "consoleapi", "processenv", "winbase"] }

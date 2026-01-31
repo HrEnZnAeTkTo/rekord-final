@@ -1,0 +1,30 @@
+{
+  "osc": {
+    "host": "127.0.0.1",
+    "port": 4460
+  },
+  "providers": {
+    "lrclib": {
+      "enabled": true,
+      "baseUrl": "https://lrclib.net/api",
+      "timeout": 5000
+    },
+    "lyricsify": {
+      "enabled": false,
+      "timeout": 5000
+    }
+  },
+  "server": {
+    "httpPort": 3000,
+    "wsPort": 3001
+  },
+  "paths": {
+    "playlists": "./data/playlists",
+    "lyricsRaw": "./data/lyrics_raw",
+    "lyricsJson": "./data/lyrics_json",
+    "library": "./data/library.json",
+    "reports": "./data/reports",
+    "cache": "./data/cache",
+    "covers": "./data/covers"
+  }
+}
