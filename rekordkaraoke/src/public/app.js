@@ -1,6 +1,6 @@
 /**
  * RekordKaraoke Frontend
- * Интерполяция времени для плавности
+ * Optimized rendering with Transform & Scale & Pre-rendered DOM
  */
 
 const app = document.getElementById('app');
@@ -14,18 +14,14 @@ const coverImage = document.getElementById('cover-image');
 
 let lyrics = null;
 let ws = null;
+let lyricsWrapper = null; // Контейнер для скролла
 
 // Интерполяция времени
 let serverTime = 0;
 let serverTimestamp = 0;
 let isPlaying = true;
 let animationFrameId = null;
-let lastActiveIndex = -1;
-let visibleLines = new Set();
-
-// Количество строк
-const LINES_BEFORE = 2;
-const LINES_AFTER = 2;
+let lastActiveIndex = -2; // Чтобы форсировать обновление при старте
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
@@ -41,149 +37,103 @@ function getCurrentTime() {
   return serverTime + elapsed;
 }
 
-// === LYRICS RENDERING ===
+// === LYRICS RENDERING (OPTIMIZED) ===
 
+/**
+ * Инициализация DOM: вызывается один раз при получении новой лирики.
+ * Создает все строки сразу.
+ */
+function initLyricsDOM() {
+  lyricsEl.innerHTML = '';
+  lastActiveIndex = -2; // Сброс индекса для ререндера
+  
+  if (!lyrics || !lyrics.lines || lyrics.lines.length === 0) return;
+
+  // Создаем обертку
+  lyricsWrapper = document.createElement('div');
+  lyricsWrapper.className = 'lyrics-wrapper';
+  lyricsEl.appendChild(lyricsWrapper);
+
+  // Генерируем строки
+  lyrics.lines.forEach((line, i) => {
+    const div = document.createElement('div');
+    div.className = 'lyric-line'; // Начальный класс
+    div.textContent = line.text;
+    div.dataset.index = i;
+    lyricsWrapper.appendChild(div);
+  });
+}
+
+/**
+ * Обновление кадра: ищет активную строку, меняет классы и сдвигает контейнер.
+ */
 function renderLyrics(currentTime) {
-  if (!lyrics || !lyrics.lines || lyrics.lines.length === 0) {
-    lyricsEl.innerHTML = '';
-    visibleLines.clear();
-    lastActiveIndex = -1;
-    return;
-  }
+  if (!lyrics || !lyrics.lines || !lyricsWrapper) return;
 
+  // 1. Ищем индекс активной строки
   let activeIndex = -1;
-  for (let i = lyrics.lines.length - 1; i >= 0; i--) {
-    if (currentTime >= lyrics.lines[i].time) {
+  
+  for (let i = 0; i < lyrics.lines.length; i++) {
+    // Используем endTime, если он есть, или начало следующей строки
+    const start = lyrics.lines[i].time;
+    const end = lyrics.lines[i].endTime || (i < lyrics.lines.length - 1 ? lyrics.lines[i+1].time : start + 10);
+
+    if (currentTime >= start && currentTime < end) {
       activeIndex = i;
       break;
     }
   }
 
-  // Если activeIndex не изменился, не перерисовываем
-  if (activeIndex === lastActiveIndex && lyricsEl.children.length > 0) {
-    return;
+  // Граничные условия
+  if (activeIndex === -1 && lyrics.lines.length > 0) {
+    // Если время больше последней строки -> последняя активна
+    if (currentTime >= lyrics.lines[lyrics.lines.length - 1].time) {
+      activeIndex = lyrics.lines.length - 1;
+    }
   }
 
-  const windowStart = Math.max(0, activeIndex - LINES_BEFORE);
-  const windowEnd = Math.min(lyrics.lines.length, activeIndex + LINES_AFTER + 1);
-  
-  const newVisibleLines = new Set();
-  for (let i = windowStart; i < windowEnd; i++) {
-    newVisibleLines.add(i);
-  }
-
-  const needsFullRender = !lyricsEl.children.length || 
-    activeIndex < lastActiveIndex ||
-    Math.abs(activeIndex - lastActiveIndex) > 2;
-
-  if (needsFullRender) {
-    renderFullLyrics(activeIndex, windowStart, windowEnd, newVisibleLines);
-  } else {
-    updateLyricsClasses(activeIndex, windowStart, windowEnd, newVisibleLines);
-  }
-
+  // Оптимизация: не трогаем DOM, если активная строка не изменилась
+  if (activeIndex === lastActiveIndex) return;
   lastActiveIndex = activeIndex;
-  visibleLines = newVisibleLines;
-}
 
-function renderFullLyrics(activeIndex, windowStart, windowEnd, newVisibleLines) {
-  let html = '';
-  
-  for (let i = windowStart; i < windowEnd; i++) {
-    const line = lyrics.lines[i];
-    const classes = getLineClasses(i, activeIndex, !visibleLines.has(i));
-    const delay = (i - windowStart) * 0.08;
-    
-    html += `<div class="${classes}" data-index="${i}" style="transition-delay: ${delay}s">${escapeHtml(line.text)}</div>`;
-  }
+  // 2. Обновляем классы и считаем смещение
+  const children = lyricsWrapper.children;
+  const viewportHeight = lyricsEl.offsetHeight;
+  let scrollOffset = 0;
+  let activeElement = null;
 
-  lyricsEl.innerHTML = html;
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    let newClass = 'lyric-line';
 
-  requestAnimationFrame(() => {
-    requestAnimationFrame(() => {
-      const lines = lyricsEl.querySelectorAll('.lyric-line');
-      lines.forEach(el => {
-        el.classList.add('visible');
-        el.classList.remove('entering');
-      });
-    });
-  });
-}
-
-function updateLyricsClasses(activeIndex, windowStart, windowEnd, newVisibleLines) {
-  const existingLines = lyricsEl.querySelectorAll('.lyric-line');
-  const existingIndices = new Set();
-  
-  existingLines.forEach(el => {
-    const idx = parseInt(el.dataset.index, 10);
-    existingIndices.add(idx);
-    
-    if (!newVisibleLines.has(idx)) {
-      el.classList.add('fading-out');
-      el.classList.remove('visible');
-    } else {
-      el.className = getLineClasses(idx, activeIndex, false);
-      el.classList.add('visible');
+    if (i === activeIndex) {
+      newClass += ' active';
+      activeElement = child;
+    } else if (i === activeIndex + 1) {
+      newClass += ' next';
+    } else if (i < activeIndex) {
+      newClass += ' past';
     }
-  });
+    // Остальные остаются 'lyric-line' (с blur и opacity)
 
-  for (let i = windowStart; i < windowEnd; i++) {
-    if (!existingIndices.has(i)) {
-      const line = lyrics.lines[i];
-      const div = document.createElement('div');
-      div.className = getLineClasses(i, activeIndex, true);
-      div.dataset.index = i;
-      div.textContent = line.text;
-      
-      const insertBefore = Array.from(lyricsEl.children).find(el => 
-        parseInt(el.dataset.index, 10) > i
-      );
-      
-      if (insertBefore) {
-        lyricsEl.insertBefore(div, insertBefore);
-      } else {
-        lyricsEl.appendChild(div);
-      }
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          div.classList.add('visible');
-          div.classList.remove('entering');
-        });
-      });
+    // Меняем класс только если нужно (DOM performance)
+    if (child.className !== newClass) {
+      child.className = newClass;
     }
   }
 
-  setTimeout(() => {
-    const fadingOut = lyricsEl.querySelectorAll('.fading-out');
-    fadingOut.forEach(el => el.remove());
-  }, 600);
-}
-
-function getLineClasses(index, activeIndex, isNew) {
-  let classes = 'lyric-line';
-  
-  if (index === activeIndex) {
-    classes += ' active';
-  } else if (index === activeIndex + 1) {
-    classes += ' next';
-  } else if (index > activeIndex + 1) {
-    classes += ' upcoming';
-  } else if (index < activeIndex) {
-    classes += ' past';
+  // 3. Сдвигаем контейнер к центру активной строки
+  if (activeElement) {
+    // Вычисляем центр:
+    // (Позиция строки внутри wrapper) + (Половина высоты строки) - (Половина высоты экрана)
+    const centerPos = activeElement.offsetTop + (activeElement.offsetHeight / 2);
+    scrollOffset = -(centerPos - (viewportHeight / 2));
+  } else {
+    scrollOffset = 0; 
   }
-  
-  if (isNew) {
-    classes += ' entering';
-  }
-  
-  return classes;
-}
 
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
+  // Hardware accelerated translate
+  lyricsWrapper.style.transform = `translate3d(0, ${scrollOffset}px, 0)`;
 }
 
 // === PROGRESS ===
@@ -193,11 +143,11 @@ function updateProgress(currentTime) {
     progressFill.style.width = '0%';
     return;
   }
-
+  
   const duration = lyrics.duration || 
-    lyrics.lines[lyrics.lines.length - 1].endTime || 
-    lyrics.lines[lyrics.lines.length - 1].time + 30;
-  const progress = Math.min(100, (currentTime / duration) * 100);
+    (lyrics.lines[lyrics.lines.length - 1].time + 10);
+    
+  const progress = Math.min(100, Math.max(0, (currentTime / duration) * 100));
   progressFill.style.width = `${progress}%`;
 }
 
@@ -228,14 +178,9 @@ function stopAnimationLoop() {
 
 function setCover(url) {
   if (!coverImage) return;
-  
   const img = new Image();
-  img.onload = () => {
-    coverImage.src = url;
-  };
-  img.onerror = () => {
-    coverImage.src = '';
-  };
+  img.onload = () => { coverImage.src = url; };
+  img.onerror = () => { coverImage.src = ''; };
   img.src = url;
 }
 
@@ -249,15 +194,12 @@ function updateFallback(artist, title) {
 
 // === WEBSOCKET ===
 
-let isConnected = false;
-
 function connect() {
   const wsUrl = `ws://${location.hostname}:${location.port || 3000}`;
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
     console.log('Connected to server');
-    isConnected = true;
     app.classList.remove('disconnected');
     startAnimationLoop();
   };
@@ -272,8 +214,7 @@ function connect() {
   };
 
   ws.onclose = () => {
-    console.log('Disconnected, reconnecting in 2s...');
-    isConnected = false;
+    console.log('Disconnected, reconnecting...');
     app.classList.add('disconnected');
     setTimeout(connect, 2000);
   };
@@ -291,26 +232,28 @@ function handleMessage(msg) {
       serverTime = msg.data.time || 0;
       serverTimestamp = Date.now();
       bpmEl.textContent = msg.data.bpm ? `${Math.round(msg.data.bpm)} BPM` : '— BPM';
+      
       lyrics = msg.data.lyrics;
       app.className = `status-${msg.data.lyricsStatus}`;
       updateFallback(msg.data.artist, msg.data.title);
-      if (msg.data.coverUrl) {
-        setCover(msg.data.coverUrl);
-      }
-      lastActiveIndex = -1;
+      
+      if (msg.data.coverUrl) setCover(msg.data.coverUrl);
+      
+      // Инициализируем DOM, если лирика уже есть
+      initLyricsDOM();
       break;
 
     case 'track':
       artistEl.textContent = msg.data.artist || '—';
       titleEl.textContent = msg.data.title || '—';
       lyrics = null;
-      lastActiveIndex = -1;
+      lyricsEl.innerHTML = ''; // Очистка
       serverTime = 0;
       serverTimestamp = Date.now();
+      
       app.className = `status-${msg.data.status}`;
       updateFallback(msg.data.artist, msg.data.title);
       if (coverImage) coverImage.src = '';
-      lyricsEl.innerHTML = '';
       progressFill.style.width = '0%';
       break;
 
@@ -318,14 +261,13 @@ function handleMessage(msg) {
       app.className = `status-${msg.data.status}`;
       if (msg.data.status === 'found' && msg.data.lyrics) {
         lyrics = msg.data.lyrics;
-        lastActiveIndex = -1;
+        // Строим DOM, когда пришла новая лирика
+        initLyricsDOM();
       }
       break;
 
     case 'cover':
-      if (msg.data) {
-        setCover(msg.data);
-      }
+      if (msg.data) setCover(msg.data);
       break;
 
     case 'time':
@@ -339,5 +281,5 @@ function handleMessage(msg) {
   }
 }
 
-// Старт
+// Start
 connect();
