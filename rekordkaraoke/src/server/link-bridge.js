@@ -1,13 +1,13 @@
 /**
  * Link Bridge - принимает OSC от rkbx_osc (или rkbx_link)
- * 
- * Ожидаемые сообщения:
+ * * Ожидаемые сообщения:
  * /track/master/title (string)   - название трека
  * /track/master/artist (string)  - исполнитель
  * /time/master (float)           - позиция в секундах
  * /bpm/master/current (float)    - BPM (или /bpm/master)
  * /beat/master (int)             - номер бита
  * /deck/master (int)             - активная дека (0 или 1)
+ * /status/playing (int)          - статус воспроизведения (0 или 1) [НОВОЕ]
  */
 
 const dgram = require('dgram');
@@ -76,7 +76,8 @@ class LinkBridge extends EventEmitter {
         time: 0,
         bpm: 0,
         beat: 0,
-        deck: 0
+        deck: 0,
+        isPlaying: true // По умолчанию считаем, что играет
       }
     };
     
@@ -108,13 +109,13 @@ class LinkBridge extends EventEmitter {
 
   handleOsc({ address, args }) {
     // /track/master/title
-    if (address === '/track/master/title' && args[0]) {
-      this.state.master.title = String(args[0]);
+    if (address === '/track/master/title' && typeof args[0] === 'string') {
+      this.state.master.title = args[0];
       this.checkTrackChange();
     }
     // /track/master/artist
-    else if (address === '/track/master/artist' && args[0]) {
-      this.state.master.artist = String(args[0]);
+    else if (address === '/track/master/artist' && typeof args[0] === 'string') {
+      this.state.master.artist = args[0];
       this.checkTrackChange();
     }
     // /time/master - принимаем и float (секунды) и int (может быть мс)
@@ -142,21 +143,33 @@ class LinkBridge extends EventEmitter {
       this.state.master.deck = args[0];
       this.emit('deckChanged', args[0]);
     }
+    // /status/playing - статус воспроизведения [НОВОЕ]
+    else if (address === '/status/playing' && typeof args[0] === 'number') {
+      const isPlaying = args[0] === 1;
+      this.state.master.isPlaying = isPlaying;
+      this.emit('playing', isPlaying);
+    }
   }
 
   checkTrackChange() {
     const { artist, title } = this.state.master;
     const key = `${artist}::${title}`;
     
-    if (key !== this.lastTrackKey && artist && title) {
+    // ИЗМЕНЕНИЕ: Разрешаем смену на пустой трек (key="::")
+    if (key !== this.lastTrackKey) {
       // Debounce: ждём 100мс, чтобы оба поля (artist + title) успели обновиться
       clearTimeout(this.trackChangeTimer);
       this.trackChangeTimer = setTimeout(() => {
         // Перепроверяем после debounce
         const currentKey = `${this.state.master.artist}::${this.state.master.title}`;
-        if (currentKey !== this.lastTrackKey && this.state.master.artist && this.state.master.title) {
+        
+        // Убрали проверку "&& this.state.master.artist"
+        if (currentKey !== this.lastTrackKey) {
           this.lastTrackKey = currentKey;
-          logger.info(`Track changed: ${this.state.master.artist} - ${this.state.master.title}`);
+          // Логируем только если трек не пустой, чтобы не спамить в консоль
+          if (this.state.master.artist || this.state.master.title) {
+             logger.info(`Track changed: ${this.state.master.artist} - ${this.state.master.title}`);
+          }
           this.emit('trackChanged', { 
             artist: this.state.master.artist, 
             title: this.state.master.title 

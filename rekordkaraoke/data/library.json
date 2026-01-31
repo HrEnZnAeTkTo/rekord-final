@@ -18,5 +18,75 @@
     "linesCount": 79,
     "provider": "lrclib",
     "addedAt": "2026-01-13T15:44:17.571Z"
+  },
+  "дети rave::china town": {
+    "artist": "Дети RAVE",
+    "title": "China Town",
+    "rawPath": "data\\lyrics_raw\\Дети_RAVE_-_China_Town.lrc",
+    "jsonPath": "data\\lyrics_json\\Дети_RAVE_-_China_Town.json",
+    "format": "lrc",
+    "linesCount": 42,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T01:08:31.978Z"
+  },
+  "sqwoz bab дети rave::zidane": {
+    "artist": "SQWOZ BAB, ДЕТИ RAVE",
+    "title": "Zidane",
+    "rawPath": "data\\lyrics_raw\\SQWOZ_BAB,_ДЕТИ_RAVE_-_Zidane.lrc",
+    "jsonPath": "data\\lyrics_json\\SQWOZ_BAB,_ДЕТИ_RAVE_-_Zidane.json",
+    "format": "lrc",
+    "linesCount": 79,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T01:09:07.793Z"
+  },
+  "death grips::takyon": {
+    "artist": "Death Grips",
+    "title": "Takyon (Death Yon)",
+    "rawPath": "data\\lyrics_raw\\Death_Grips_-_Takyon_(Death_Yon).lrc",
+    "jsonPath": "data\\lyrics_json\\Death_Grips_-_Takyon_(Death_Yon).json",
+    "format": "lrc",
+    "linesCount": 57,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T01:15:39.798Z"
+  },
+  "death grips::hacker": {
+    "artist": "Death Grips",
+    "title": "Hacker",
+    "rawPath": "data\\lyrics_raw\\Death_Grips_-_Hacker.lrc",
+    "jsonPath": "data\\lyrics_json\\Death_Grips_-_Hacker.json",
+    "format": "lrc",
+    "linesCount": 146,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T01:15:44.643Z"
+  },
+  "sematary::wendigo": {
+    "artist": "SEMATARY",
+    "title": "WENDIGO",
+    "rawPath": "data\\lyrics_raw\\SEMATARY_-_WENDIGO.lrc",
+    "jsonPath": "data\\lyrics_json\\SEMATARY_-_WENDIGO.json",
+    "format": "lrc",
+    "linesCount": 37,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T02:11:02.190Z"
+  },
+  "call me karizma::american idol": {
+    "artist": "Call Me Karizma",
+    "title": "American Idol",
+    "rawPath": "data\\lyrics_raw\\Call_Me_Karizma_-_American_Idol.lrc",
+    "jsonPath": "data\\lyrics_json\\Call_Me_Karizma_-_American_Idol.json",
+    "format": "lrc",
+    "linesCount": 65,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T02:16:38.843Z"
+  },
+  "bon jovi::its my life": {
+    "artist": "Bon Jovi",
+    "title": "It's My Life",
+    "rawPath": "data\\lyrics_raw\\Bon_Jovi_-_It's_My_Life.lrc",
+    "jsonPath": "data\\lyrics_json\\Bon_Jovi_-_It's_My_Life.json",
+    "format": "lrc",
+    "linesCount": 45,
+    "provider": "lrclib",
+    "addedAt": "2026-01-31T02:17:33.180Z"
   }
 }

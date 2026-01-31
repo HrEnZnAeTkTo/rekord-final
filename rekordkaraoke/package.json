@@ -15,11 +15,17 @@
     "type": "git",
     "url": "git+https://github.com/steesann/RekordKaraoke-app.git"
   },
-  "keywords": ["karaoke", "rekordbox", "dj", "lyrics"],
+  "keywords": [
+    "karaoke",
+    "rekordbox",
+    "dj",
+    "lyrics"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "cheerio": "^1.2.0",
     "ws": "^8.14.0"
   },
   "bugs": {

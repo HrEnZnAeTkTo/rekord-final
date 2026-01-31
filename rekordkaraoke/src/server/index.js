@@ -19,8 +19,14 @@ let currentState = {
   bpm: 0,
   lyrics: null,
   lyricsStatus: 'none',
-  coverUrl: null
+  coverUrl: null,
+  isPlaying: true
 };
+
+// === FIX: СЧЕТЧИК ПОКОЛЕНИЙ ===
+// Увеличивается при каждой смене трека. Помогает отбрасывать устаревшие результаты.
+let stateGeneration = 0; 
+// ==============================
 
 // WebSocket клиенты
 const wsClients = new Set();
@@ -101,7 +107,12 @@ async function main() {
   // Link Bridge (OSC от rkbx_link)
   const bridge = new LinkBridge(config.osc);
   
-  bridge.on('trackChanged', async ({ artist, title }) => {
+  bridge.on('trackChanged', ({ artist, title }) => {
+    // 1. Увеличиваем поколение. Любой запрос, запущенный ДО этого момента, станет невалидным.
+    stateGeneration++;
+    const myGeneration = stateGeneration;
+
+    // Сбрасываем состояние
     currentState.artist = artist;
     currentState.title = title;
     currentState.lyrics = null;
@@ -109,38 +120,69 @@ async function main() {
     currentState.coverUrl = null;
     
     broadcast({ type: 'track', data: { artist, title, status: 'loading' } });
-    
-    // Параллельно ищем лирику и обложку
-    const [lyricsResult, coverUrl] = await Promise.all([
-      resolver.resolve(artist, title),
-      coverProvider.getCover(artist, title).catch(err => {
-        logger.error(`Cover error: ${err.message}`);
-        return null;
+
+    // Фильтруем пустые/Loading треки
+    if (!artist || !title || artist === 'Loading...' || title === 'Loading...') {
+        return;
+    }
+
+    // === 2. ЗАПУСКАЕМ ПОИСК ОБЛОЖКИ (С ПРОВЕРКОЙ ПОКОЛЕНИЯ) ===
+    coverProvider.getCover(artist, title)
+      .then(coverUrl => {
+         // Если поколение сменилось (пока мы искали, трек переключили) — выходим
+         if (stateGeneration !== myGeneration) return;
+
+         if (coverUrl) {
+            currentState.coverUrl = coverUrl;
+            broadcast({ type: 'cover', data: coverUrl });
+         }
       })
-    ]);
-    
-    // Обложка
-    if (coverUrl) {
-      currentState.coverUrl = coverUrl;
-      broadcast({ type: 'cover', data: coverUrl });
-    }
-    
-    // Лирика
-    if (lyricsResult) {
-      try {
-        const lyrics = await resolver.store.load(lyricsResult.jsonPath);
-        currentState.lyrics = lyrics;
-        currentState.lyricsStatus = 'found';
-        broadcast({ type: 'lyrics', data: { status: 'found', lyrics } });
-      } catch (err) {
-        logger.error(`Failed to load lyrics: ${err.message}`);
-        currentState.lyricsStatus = 'not_found';
-        broadcast({ type: 'lyrics', data: { status: 'not_found' } });
-      }
-    } else {
-      currentState.lyricsStatus = 'not_found';
-      broadcast({ type: 'lyrics', data: { status: 'not_found' } });
-    }
+      .catch(err => {
+         logger.error(`Cover error: ${err.message}`);
+      });
+
+    // === 3. ЗАПУСКАЕМ ПОИСК ТЕКСТА (С ПРОВЕРКОЙ ПОКОЛЕНИЯ) ===
+    resolver.resolve(artist, title)
+      .then(async (lyricsResult) => {
+         // Проверка поколения
+         if (stateGeneration !== myGeneration) return;
+
+         if (lyricsResult) {
+             try {
+                 const lyrics = await resolver.store.load(lyricsResult.jsonPath);
+                 
+                 // Повторная проверка (чтение файла могло занять время)
+                 if (stateGeneration !== myGeneration) return;
+
+                 currentState.lyrics = lyrics;
+                 currentState.lyricsStatus = 'found';
+                 broadcast({ type: 'lyrics', data: { status: 'found', lyrics } });
+             } catch (err) {
+                 logger.error(`Failed to load lyrics: ${err.message}`);
+                 // Если это всё ещё актуальный трек — шлем ошибку
+                 if (stateGeneration === myGeneration) {
+                    currentState.lyrics = null;
+                    currentState.lyricsStatus = 'not_found';
+                    broadcast({ type: 'lyrics', data: { status: 'not_found' } });
+                 }
+             }
+         } else {
+             // Если не нашли
+             if (stateGeneration === myGeneration) {
+                currentState.lyrics = null;
+                currentState.lyricsStatus = 'not_found';
+                broadcast({ type: 'lyrics', data: { status: 'not_found' } });
+             }
+         }
+      })
+      .catch(err => {
+         logger.error(`Lyrics resolve error: ${err.message}`);
+         if (stateGeneration === myGeneration) {
+            currentState.lyrics = null;
+            currentState.lyricsStatus = 'not_found';
+            broadcast({ type: 'lyrics', data: { status: 'not_found' } });
+         }
+      });
   });
 
   bridge.on('time', (time) => {
@@ -151,6 +193,11 @@ async function main() {
   bridge.on('bpm', (bpm) => {
     currentState.bpm = bpm;
     broadcast({ type: 'bpm', data: bpm });
+  });
+
+  bridge.on('playing', (isPlaying) => {
+    currentState.isPlaying = isPlaying;
+    broadcast({ type: 'status', data: { isPlaying } });
   });
 
   bridge.start();

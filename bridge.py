@@ -4,13 +4,18 @@ from pywinauto import Desktop
 from pythonosc import dispatcher, osc_server, udp_client
 
 # === КОНФИГУРАЦИЯ ===
-RUST_PORT = 4455       # Порт, куда Rust шлет инфу о деке
+RUST_PORT = 4455       # Порт, куда Rust шлет инфу (дека + время)
 NODE_PORT = 4460       # Порт RekordKaraoke (Node.js)
-POLL_INTERVAL = 0.1    # Как часто проверять экран (сек)
+POLL_INTERVAL = 0.5    # Как часто проверять экран (сек)
 
 # Глобальные переменные
 current_master_deck = 0 
 last_sent_track_info = ""
+
+# --- НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ СИНХРОНИЗАЦИИ ---
+last_time_update = 0        # Время получения последнего пакета от Rust
+is_playing = False          # Текущее состояние воспроизведения
+# ------------------------------------------
 
 # Клиент для отправки в Node.js
 sender = udp_client.SimpleUDPClient("127.0.0.1", NODE_PORT)
@@ -103,8 +108,16 @@ class UIReader:
 reader = UIReader()
 
 # === ПОТОК 1: СЛУШАЕМ RUST ===
+
+# --- ОБРАБОТЧИК ВРЕМЕНИ ДЛЯ WATCHDOG ---
+def handle_time(address, *args):
+    global last_time_update
+    # Просто обновляем метку времени, когда пришел пакет
+    last_time_update = time.time()
+# ---------------------------------------
+
 def handle_deck_change(address, *args):
-    global current_master_deck
+    global current_master_deck, last_sent_track_info
     try:
         new_deck = int(args[0])
         if new_deck in [0, 1]:
@@ -112,10 +125,13 @@ def handle_deck_change(address, *args):
                 print(f"[OSC] Rust switched master to Deck {new_deck + 1}")
                 current_master_deck = new_deck
                 
-                # ХАК: При смене деки сразу сбрасываем текст в караоке,
-                # чтобы не висел старый трек, пока мы читаем новый (убирает рассинхрон)
+                # ИЗМЕНЕНИЕ: Шлем пустые строки вместо "Loading..."
+                # Это сигнал для сервера: "Трек сменился, очисти экран"
                 sender.send_message("/track/master/title", "")
-                sender.send_message("/track/master/artist", "Loading...")
+                sender.send_message("/track/master/artist", "")
+                
+                # Сбрасываем кэш, чтобы следующий реальный трек точно отправился
+                last_sent_track_info = ""
                 
     except ValueError:
         pass
@@ -123,25 +139,47 @@ def handle_deck_change(address, *args):
 def start_osc_listener():
     dp = dispatcher.Dispatcher()
     dp.map("/deck/master", handle_deck_change)
+    dp.map("/time/master", handle_time) # <--- ПОДПИСКА НА ВРЕМЯ
     server = osc_server.ThreadingOSCUDPServer(("0.0.0.0", RUST_PORT), dp)
-    print(f"[Proxy] Listening for Deck Info on {RUST_PORT}...")
+    print(f"[Proxy] Listening for Deck Info & Time on {RUST_PORT}...")
     server.serve_forever()
 
 # === ПОТОК 2: ПРОВЕРЯЕМ ЭКРАН (POLLING) ===
 def start_polling():
-    global last_sent_track_info
+    global last_sent_track_info, is_playing
     print(f"[Poller] Started checking UI every {POLL_INTERVAL}s...")
     
     while True:
         try:
+            # 1. ЛОГИКА PLAY/PAUSE (WATCHDOG)
+            # Если данные от Rust приходили недавно (< 0.3 сек назад) -> PLAY
+            now = time.time()
+            new_state = (now - last_time_update) < 0.3
+
+            if new_state != is_playing:
+                is_playing = new_state
+                status_str = "playing" if is_playing else "paused"
+                print(f"[State] {status_str.upper()}")
+                
+                # Шлем статус в Node.js (1 = play, 0 = pause)
+                sender.send_message("/status/playing", 1 if is_playing else 0)
+
+            # 2. ЧТЕНИЕ ТРЕКА
             res = reader.get_track_info(current_master_deck)
             
             if res:
                 artist, title = res
+                
+                # ИЗМЕНЕНИЕ: Фильтруем "Loading..." и пустые строки из UI
+                # Если Rekordbox показывает Loading, мы просто ждем, не обновляя сервер
+                if not artist or not title or artist == "Loading..." or title == "Loading...":
+                    time.sleep(POLL_INTERVAL)
+                    continue
+
                 combined = f"{artist} - {title}"
                 
-                # Если текст изменился и он валидный (не пустой)
-                if combined != last_sent_track_info and artist and title:
+                # Если текст изменился и он валидный
+                if combined != last_sent_track_info:
                     print(f">>> DETECTED NEW TRACK: {combined}")
                     
                     sender.send_message("/track/master/artist", artist)

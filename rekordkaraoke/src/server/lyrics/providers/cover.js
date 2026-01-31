@@ -1,336 +1,234 @@
 /**
- * Cover Art Provider
- * MusicBrainz -> Cover Art Archive (front-500)
- *
- * Key fixes vs old version:
- * - search recordings using artistname: (not only artist:) to match multi-artist credits
- * - fallback strategies: drop status:official; try release search too
- * - duration is optional; only apply qdur when provided
- * - never read Response body twice
- * - keep CAA via HTTP front-500 (redirects to archive.org)
+ * Cover Art Provider (RU Optimized)
+ * Priority: Local -> Yandex Music -> iTunes -> Genius
  */
 
 const fs = require("fs");
 const path = require("path");
 const dns = require("dns");
-
 const logger = require("../../util/logger");
-const { makeSafeFilename, cleanForSearch } = require("../../util/normalize");
+const { makeSafeFilename } = require("../../util/normalize");
 
-const MB_BASE = "https://musicbrainz.org/ws/2";
-const CAA_BASE = "http://coverartarchive.org";
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
+// Устанавливаем предпочтение IPv4 (иногда помогает с таймаутами в Node.js)
 if (typeof dns.setDefaultResultOrder === "function") {
   dns.setDefaultResultOrder("ipv4first");
 }
 
-function escapeLucenePhrase(s) {
-  return String(s).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function normalizeDurationMs(d) {
-  const n = Number(d);
-  if (!Number.isFinite(n) || n <= 0) return 0;
-  // if it's small, it's probably seconds
-  return n < 10000 ? Math.round(n * 1000) : Math.round(n);
-}
-
-function qdur(durationMs) {
-  // MusicBrainz: qdur = duration(ms)/2000 rounded
-  return Math.round(durationMs / 2000);
-}
-
-function tokenizeForField(s) {
-  // split into "words" (unicode letters/digits), drop short noise
-  const parts = String(s)
-    .split(/[^\p{L}\p{N}]+/gu)
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .filter((x) => x.length >= 2);
-  return parts.slice(0, 6); // keep it sane
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 class CoverProvider {
   constructor(config) {
     this.coversDir = config.paths?.covers || "./data/covers";
-    this.timeout = config.timeout || 8000;
-
-    // MusicBrainz requires a meaningful UA string (with contact)
-    this.userAgent =
-      config.musicbrainz?.userAgent ||
-      "rk-karaoke/0.0.2 (alpha) (yrkiy.evgeny@gmail.com)";
-
-    // MB: <= 1 req / sec
-    this._mbNextAt = 0;
-
+    this.timeout = config.timeout || 8000; // 8 секунд на запрос
+    this.retries = 2; // Количество повторных попыток
+    
+    // Yandex требует приличный User-Agent, иначе вернет капчу или 403
+    this.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    
+    // Очередь загрузок (чтобы не качать одну и ту же обложку дважды)
     this._inFlight = new Map();
-    this.retries = Number.isFinite(config.retries) ? config.retries : 3;
   }
 
   async init() {
     await fs.promises.mkdir(this.coversDir, { recursive: true });
   }
 
-  async _fetchWithTimeout(url, options = {}) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), this.timeout);
+  // === 1. ПРОВЕРКА ЛОКАЛЬНОГО ФАЙЛА ===
+  async checkLocal(artist, title) {
+    const safeName = makeSafeFilename(artist, title);
+    const extensions = ['.jpg', '.jpeg', '.png', '.webp'];
 
-    try {
-      return await fetch(url, { ...options, signal: controller.signal });
-    } catch (err) {
-      const cause = err?.cause;
-      const causeMsg =
-        cause?.code || cause?.message || (cause ? String(cause) : "no-cause");
-      logger.warn(`Fetch failed: ${url} :: ${err.message} :: ${causeMsg}`);
-      throw err;
-    } finally {
-      clearTimeout(t);
-    }
-  }
-
-  async _fetchRetry(url, options = {}, tries = this.retries) {
-    const transient = new Set([
-      "ECONNRESET", 
-      "ETIMEDOUT", 
-      "EAI_AGAIN", 
-      "ENOTFOUND",
-
-      "UND_ERR_SOCKET",
-      "UND_ERR_CONNECT_TIMEOUT",
-      "UND_ERR_HEADERS_TIMEOUT",
-      "UND_ERR_BODY_TIMEOUT",
-    ]);
-    let lastErr;
-
-    for (let i = 0; i < tries; i++) {
+    for (const ext of extensions) {
+      const filename = `${safeName}${ext}`;
+      const filePath = path.join(this.coversDir, filename);
+      
       try {
-        return await this._fetchWithTimeout(url, options);
+        await fs.promises.access(filePath);
+        // Если файл существует и размер > 0
+        const stat = await fs.promises.stat(filePath);
+        if (stat.size > 0) {
+            logger.debug(`[Cover] Found local: ${filename}`);
+            return `/covers/${encodeURIComponent(filename)}`;
+        }
       } catch (e) {
-        lastErr = e;
-        const code = e?.cause?.code;
-        const isTransient = code && transient.has(code);
-        if (!isTransient || i === tries - 1) throw e;
-        await sleep(250 * 2 ** i);
+        continue;
       }
     }
-    throw lastErr;
+    return null;
   }
 
-  async _mbFetch(url) {
-    const now = Date.now();
-    if (now < this._mbNextAt) await sleep(this._mbNextAt - now);
-    this._mbNextAt = Date.now() + 1100;
+  // === ОСНОВНОЙ МЕТОД ===
+  async getCover(artist, title) {
+    // 1. Сначала ищем локально
+    const local = await this.checkLocal(artist, title);
+    if (local) return local;
 
-    return this._fetchRetry(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": this.userAgent,
-      },
-    });
-  }
-
-  async _mbSearch(type, query, { inc = "", limit = 10 } = {}) {
-    const url = new URL(`${MB_BASE}/${type}/`);
-    url.searchParams.set("query", query);
-    url.searchParams.set("fmt", "json");
-    url.searchParams.set("limit", String(limit));
-    if (inc) url.searchParams.set("inc", inc);
-
-    const res = await this._mbFetch(url.toString());
-
-    let data;
-    try {
-      data = await res.json(); // read once
-    } catch (e) {
-      logger.warn(`MusicBrainz JSON parse failed type=${type} status=${res.status}: ${e.message}`);
-      return null;
-    }
-
-    // log compactly (helps debugging without spamming huge JSON)
-    const count =
-      data?.count ??
-      data?.["recording-count"] ??
-      data?.["release-count"] ??
-      data?.["release-group-count"] ??
-      "?";
-    logger.debug(`MusicBrainz type=${type} status=${res.status} count=${count}`);
-
-    if (!res.ok) return null;
-    return data;
-  }
-
-  async _fileExists(p, minBytes = 1024) {
-    try {
-      const st = await fs.promises.stat(p);
-      return st.isFile() && st.size >= minBytes;
-    } catch {
-      return false;
-    }
-  }
-
-  _caaFrontUrl(releaseMbid) {
-    // In your environment HTTPS to CAA fails; HTTP redirects to archive.org and works
-    return `${CAA_BASE}/release/${releaseMbid}/front-500`;
-  }
-
-  async getCover(artist, title, durationMs) {
+    // Имя файла для сохранения (всегда .jpg для простоты)
     const filename = `${makeSafeFilename(artist, title)}.jpg`;
     const filePath = path.join(this.coversDir, filename);
     const publicUrl = `/covers/${filename}`;
 
-    if (await this._fileExists(filePath)) return publicUrl;
-    if (this._inFlight.has(filename)) return await this._inFlight.get(filename);
+    // Если уже качаем этот файл — вернем промис
+    if (this._inFlight.has(filename)) return this._inFlight.get(filename);
 
     const task = (async () => {
-      try {
-        const releaseMbid = await this._findReleaseMbid(artist, title, durationMs);
-        if (!releaseMbid) return null;
+        let imageUrl = null;
 
-        const imageUrl = this._caaFrontUrl(releaseMbid);
-        const ok = await this._downloadImageAtomic(imageUrl, filePath);
-        return ok ? publicUrl : null;
-      } catch (e) {
-        logger.warn(`Cover error: ${e.message}`);
+        // 2. Yandex Music (Приоритет №1 в РФ)
+        try {
+            imageUrl = await this._searchYandex(artist, title);
+        } catch (e) {
+            logger.warn(`Yandex Cover failed: ${e.message}`);
+        }
+
+        // 3. iTunes (Приоритет №2)
+        if (!imageUrl) {
+            try {
+                imageUrl = await this._searchItunes(artist, title);
+            } catch (e) {
+                logger.warn(`iTunes Cover failed: ${e.message}`);
+            }
+        }
+
+        // 4. Genius (Приоритет №3 - Backup)
+        if (!imageUrl) {
+            try {
+                imageUrl = await this._searchGenius(artist, title);
+            } catch (e) {
+                logger.warn(`Genius Cover failed: ${e.message}`);
+            }
+        }
+
+        if (imageUrl) {
+            logger.info(`[Cover] Downloading from: ${imageUrl}`);
+            const success = await this._downloadImageAtomic(imageUrl, filePath);
+            return success ? publicUrl : null;
+        }
+        
         return null;
-      }
     })();
 
     this._inFlight.set(filename, task);
     try {
-      return await task;
+        return await task;
     } finally {
-      this._inFlight.delete(filename);
+        this._inFlight.delete(filename);
     }
   }
 
-  async _findReleaseMbid(artist, title, durationMs) {
-    const durMs = normalizeDurationMs(durationMs);
+  // === ПРОВАЙДЕР: YANDEX MUSIC ===
+  async _searchYandex(artist, title) {
+    const query = encodeURIComponent(`${artist} ${title}`);
+    // Используем публичный хендлер, который использует веб-версия
+    const url = `https://music.yandex.ru/handlers/music-search.jsx?text=${query}&type=tracks&lang=ru`;
 
-    const attempts = [
-      { a: artist, t: title, tag: "raw" },
-      { a: cleanForSearch(artist), t: cleanForSearch(title), tag: "clean" },
-    ];
-
-    // title clauses: phrase first, then token-based (looser)
-    const makeTitleClauses = (t) => {
-      const tt = escapeLucenePhrase(t);
-      const tokens = tokenizeForField(t).map(escapeLucenePhrase);
-      const tokenClause =
-        tokens.length >= 2
-          ? `recording:(${tokens.join(" AND ")})`
-          : tokens.length === 1
-            ? `recording:${tokens[0]}`
-            : null;
-
-      return [
-        { label: "phrase", clause: `recording:"${tt}"` },
-        ...(tokenClause ? [{ label: "tokens", clause: tokenClause }] : []),
-      ];
-    };
-
-    for (const { a, t, tag } of attempts) {
-      const aa = escapeLucenePhrase(a);
-      const titleClauses = makeTitleClauses(t);
-
-      // Important: prefer artistname: (any artist), fallback to artist: (combined credit)
-      const artistFields = ["artistname", "artist"];
-
-      // status:official can be too strict for some entries -> try with and without
-      const statusModes = [true, false];
-
-      // 1) Recording search with inc=releases
-      for (const af of artistFields) {
-        for (const tm of titleClauses) {
-          for (const withStatus of statusModes) {
-            let query = `${af}:"${aa}" AND ${tm.clause}`;
-            if (durMs) query += ` AND qdur:${qdur(durMs)}`;
-            if (withStatus) query += ` AND status:official`;
-
-            const data = await this._mbSearch("recording", query, { inc: "releases", limit: 10 });
-            const recs = data?.recordings;
-            logger.debug(
-              `MB try recording tag=${tag} af=${af} title=${tm.label} status=${withStatus ? "on" : "off"} durMs=${durMs}`
-            );
-
-            if (!Array.isArray(recs) || recs.length === 0) continue;
-
-            const bestRec =
-              recs.slice().sort((x, y) => Number(y.score || 0) - Number(x.score || 0))[0] || null;
-
-            const releases = bestRec?.releases;
-            if (!Array.isArray(releases) || releases.length === 0) continue;
-
-            const bestRelease =
-              releases.find((r) => String(r.status).toLowerCase() === "official") || releases[0];
-
-            if (bestRelease?.id) return bestRelease.id;
-          }
+    const res = await this._fetchWithTimeout(url, {
+        headers: {
+            "User-Agent": this.userAgent,
+            "Accept": "application/json",
+            "Referer": "https://music.yandex.ru/"
         }
-      }
+    });
 
-      // 2) Release search (useful when single title == track title)
-      for (const af of artistFields) {
-        for (const withStatus of statusModes) {
-          const tt = escapeLucenePhrase(t);
-          let query = `${af}:"${aa}" AND release:"${tt}"`;
-          if (withStatus) query += ` AND status:official`;
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const data = await res.json();
 
-          const data = await this._mbSearch("release", query, { limit: 10 });
-          const rels = data?.releases;
-          logger.debug(
-            `MB try release tag=${tag} af=${af} status=${withStatus ? "on" : "off"}`
-          );
+    const tracks = data.tracks?.items;
+    if (!tracks || tracks.length === 0) return null;
 
-          if (!Array.isArray(rels) || rels.length === 0) continue;
+    // Берем первый трек
+    const track = tracks[0];
+    if (!track.coverUri) return null;
 
-          const bestRel =
-            rels.slice().sort((x, y) => Number(y.score || 0) - Number(x.score || 0))[0] || null;
-
-          if (bestRel?.id) return bestRel.id;
-        }
-      }
-    }
-
-    return null;
+    // coverUri приходит вида: "avatars.yandex.net/get-music-content/123/456.%%.jpg"
+    // Нам нужно заменить "%%" на размер, например "600x600"
+    const rawUrl = track.coverUri.replace('%%', '600x600');
+    return `https://${rawUrl}`;
   }
 
+  // === ПРОВАЙДЕР: ITUNES ===
+  async _searchItunes(artist, title) {
+    const query = encodeURIComponent(`${artist} ${title}`);
+    const url = `https://itunes.apple.com/search?term=${query}&media=music&entity=song&limit=1`;
+
+    const res = await this._fetchWithTimeout(url);
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const data = await res.json();
+
+    if (!data.results || data.results.length === 0) return null;
+
+    const item = data.results[0];
+    if (!item.artworkUrl100) return null;
+
+    // Меняем размер 100x100 на 600x600 (High Res)
+    return item.artworkUrl100.replace('100x100bb', '600x600bb');
+  }
+
+  // === ПРОВАЙДЕР: GENIUS ===
+  async _searchGenius(artist, title) {
+    const query = encodeURIComponent(`${artist} ${title}`);
+    const url = `https://genius.com/api/search/multi?q=${query}`;
+
+    const res = await this._fetchWithTimeout(url, {
+        headers: { "User-Agent": this.userAgent }
+    });
+    
+    if (!res.ok) throw new Error(`Status ${res.status}`);
+    const data = await res.json();
+    
+    // Ищем в секциях секцию 'song'
+    const sections = data.response?.sections;
+    if (!sections) return null;
+
+    const songSection = sections.find(s => s.type === 'song');
+    if (!songSection || !songSection.hits || songSection.hits.length === 0) return null;
+
+    const hit = songSection.hits[0];
+    return hit.result?.song_art_image_url || null;
+  }
+
+  // === UTIL: ЗАГРУЗКА ===
   async _downloadImageAtomic(url, filePath) {
     const tmp = `${filePath}.tmp`;
 
     try {
-      const res = await this._fetchRetry(url, {
-        headers: { Accept: "image/*" },
-        redirect: "follow",
-      });
-
+      const res = await this._fetchWithTimeout(url);
       if (!res.ok) return false;
 
-      const ct = (res.headers.get("content-type") || "").toLowerCase();
-      if (!ct.startsWith("image/") && ct !== "application/octet-stream") return false;
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length < 1024) return false; // Слишком маленький файл - подозрительно
 
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 1024) return false;
-
-      await fs.promises.writeFile(tmp, buf);
+      await fs.promises.writeFile(tmp, buffer);
       await fs.promises.rename(tmp, filePath);
       return true;
     } catch (e) {
+      // Удаляем временный файл если что-то пошло не так
       fs.promises.unlink(tmp).catch(() => {});
-      const cause = e?.cause;
-      logger.warn(
-        `Cover download failed: ${e.message}` +
-          (cause ? ` :: ${cause.code || cause.message || String(cause)}` : "")
-      );
+      logger.warn(`Download failed: ${e.message}`);
       return false;
     }
   }
 
-  async hasCover(artist, title) {
-    const filename = `${makeSafeFilename(artist, title)}.jpg`;
-    const filePath = path.join(this.coversDir, filename);
-    return await this._fileExists(filePath);
+  // === UTIL: FETCH С ТАЙМАУТОМ И ПОВТОРАМИ ===
+  async _fetchWithTimeout(url, options = {}, retries = this.retries) {
+    for (let i = 0; i <= retries; i++) {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), this.timeout);
+        
+        try {
+            const res = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(id);
+            if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+                throw new Error(`Retryable status ${res.status}`);
+            }
+            return res;
+        } catch (err) {
+            clearTimeout(id);
+            const isLast = i === retries;
+            if (isLast) throw err;
+            await sleep(500 * (i + 1)); // Backoff
+        }
+    }
   }
 }
 

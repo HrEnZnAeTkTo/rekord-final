@@ -1,16 +1,17 @@
 const fs = require('fs');
 const path = require('path');
-const LrclibProvider = require('./providers/lrclib');
 const Store = require('./store');
 const { getLibrary } = require('./library');
 const { makeSafeFilename, makeKey } = require('../util/normalize');
 const parsers = require('../parsers');
 const logger = require('../util/logger');
 
+// Импортируем наш единый провайдер
+const UnifiedLyricsProvider = require('./providers/unified');
+
 class Resolver {
   constructor(config) {
     this.config = config;
-    this.providers = [];
     this.store = new Store({
       lyricsRaw: config.paths.lyricsRaw,
       lyricsJson: config.paths.lyricsJson
@@ -18,13 +19,14 @@ class Resolver {
     this.library = null;
     this.rawDir = config.paths.lyricsRaw;
     
-    // Mutex: отслеживаем текущие in-flight запросы
     this.pendingRequests = new Map();
 
-    // Инициализируем провайдеры
-    if (config.providers.lrclib?.enabled) {
-      this.providers.push(new LrclibProvider(config.providers.lrclib));
-    }
+    // Инициализируем ЕДИНЫЙ провайдер
+    // Он внутри себя разберется с Яндекс/Мегалобиз/LRCLIB
+    this.provider = new UnifiedLyricsProvider({
+        timeout: 8000,
+        lrclib: config.providers?.lrclib?.enabled // Можно выключить через конфиг
+    });
   }
 
   async init() {
@@ -33,14 +35,13 @@ class Resolver {
   }
 
   /**
-   * Ищет лирику: сначала локально, потом через провайдеры
-   * Возвращает { jsonPath, ... } или null
+   * Resolve lyrics: Local -> Provider (Unified)
    */
   async resolve(artist, title, options = {}) {
     const { skipLocal = false, skipProviders = false } = options;
     const key = makeKey(artist, title);
 
-    // 1. Проверяем library (быстрый путь)
+    // 1. Library Check (Cache)
     if (!skipLocal) {
       const cached = this.library.find(artist, title);
       if (cached) {
@@ -49,13 +50,11 @@ class Resolver {
       }
     }
 
-    // 2. Проверяем, не идёт ли уже запрос на этот трек
+    // 2. Pending Requests Mutex
     if (this.pendingRequests.has(key)) {
-      logger.debug(`Waiting for pending request: "${artist} - ${title}"`);
       return this.pendingRequests.get(key);
     }
 
-    // 3. Создаём новый запрос с mutex
     const requestPromise = this._doResolve(artist, title, skipLocal, skipProviders);
     this.pendingRequests.set(key, requestPromise);
 
@@ -67,28 +66,23 @@ class Resolver {
     }
   }
 
-  /**
-   * Внутренняя логика поиска (без mutex)
-   */
   async _doResolve(artist, title, skipLocal, skipProviders) {
-    // Проверяем локальные файлы в raw директории
+    // 1. Check Local Files (.lrc/.srt in raw folder)
     if (!skipLocal) {
       const localResult = await this.checkLocalFiles(artist, title);
-      if (localResult) {
-        return localResult;
-      }
+      if (localResult) return localResult;
     }
 
-    // Запрашиваем провайдеры
+    // 2. Ask Unified Provider
     if (!skipProviders) {
-      for (const provider of this.providers) {
-        logger.debug(`Trying provider: ${provider.name}`);
+      try {
+        logger.debug(`Searching via Unified Provider...`);
+        const result = await this.provider.search(artist, title);
         
-        const result = await provider.search(artist, title);
-        if (result) {
-          logger.info(`Found via ${provider.name}: "${artist} - ${title}"`);
+        if (result && result.content) {
+          logger.info(`Found via ${result.meta?.source || 'Unified'}: "${artist} - ${title}"`);
           
-          // Сохраняем (передаём duration если есть)
+          // Save to store
           const stored = await this.store.save(
             artist, 
             title, 
@@ -97,14 +91,16 @@ class Resolver {
             result.meta?.duration
           );
           
-          // Добавляем в library
+          // Add to library index
           await this.library.add(artist, title, {
             ...stored,
-            provider: provider.name
+            provider: result.meta?.source || 'Unified'
           });
 
           return this.library.find(artist, title);
         }
+      } catch (e) {
+        logger.warn(`Unified search error: ${e.message}`);
       }
     }
 
@@ -112,34 +108,21 @@ class Resolver {
     return null;
   }
 
-  /**
-   * Проверяет наличие локальных файлов в raw директории
-   */
   async checkLocalFiles(artist, title) {
     const baseName = makeSafeFilename(artist, title);
     const formats = parsers.getSupportedFormats();
 
     for (const ext of formats) {
       const rawPath = path.join(this.rawDir, `${baseName}${ext}`);
-      
       try {
         await fs.promises.access(rawPath);
-        
         logger.info(`Found local file: ${rawPath}`);
         const content = await fs.promises.readFile(rawPath, 'utf8');
         const stored = await this.store.save(artist, title, content, ext);
-        
-        await this.library.add(artist, title, {
-          ...stored,
-          provider: 'local'
-        });
-
+        await this.library.add(artist, title, { ...stored, provider: 'local' });
         return this.library.find(artist, title);
-      } catch {
-        // Файл не существует, продолжаем
-      }
+      } catch { }
     }
-
     return null;
   }
 }

@@ -145,9 +145,9 @@ fn disable_quick_edit() {
 
 fn main() {
     disable_quick_edit();
-    println!("=== RKBX Splitter v3 ===");
+    println!("=== RKBX Splitter v3.1 (Time Sync) ===");
     println!("> Time/BPM -> 4460 (Node.js)");
-    println!("> Deck Info -> 4455 (Python)");
+    println!("> Deck/Time -> 4455 (Python)");
 
     if !Path::new("./offsets").exists() {
         let _ = Command::new("curl").args(["-o", "offsets", "https://raw.githubusercontent.com/fjel/rkbx_os2l/master/offsets"]).output();
@@ -183,6 +183,11 @@ fn main() {
         // --- ОТПРАВКА В NODE.JS (4460) ---
         if rb.master_time != last_time {
             osc_karaoke.send_time(rb.master_time);
+            
+            // === ВАЖНО: Отправляем время и в Python для детекции паузы ===
+            osc_python.send_time(rb.master_time);
+            // =============================================================
+
             last_time = rb.master_time;
         }
         if (rb.master_bpm - last_bpm).abs() > 0.01 {
@@ -196,7 +201,6 @@ fn main() {
 
         // --- ОТПРАВКА В PYTHON (4455) ---
         // Отправляем ТОЛЬКО если дека сменилась.
-        // Питон сам запомнит текущую деку.
         if rb.masterdeck_index != last_deck {
             // println!("Deck changed: {}", rb.masterdeck_index + 1);
             osc_python.send_master_deck(rb.masterdeck_index);

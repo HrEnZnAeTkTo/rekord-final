@@ -230,7 +230,18 @@ function handleMessage(msg) {
       artistEl.textContent = msg.data.artist || '—';
       titleEl.textContent = msg.data.title || 'Waiting for track...';
       serverTime = msg.data.time || 0;
-      serverTimestamp = Date.now();
+      
+      // Обновляем isPlaying из стейта
+      if (typeof msg.data.isPlaying !== 'undefined') {
+        isPlaying = msg.data.isPlaying;
+      }
+
+      if (isPlaying) {
+        serverTimestamp = Date.now();
+      } else {
+        serverTimestamp = 0;
+      }
+      
       bpmEl.textContent = msg.data.bpm ? `${Math.round(msg.data.bpm)} BPM` : '— BPM';
       
       lyrics = msg.data.lyrics;
@@ -259,10 +270,17 @@ function handleMessage(msg) {
 
     case 'lyrics':
       app.className = `status-${msg.data.status}`;
+      
       if (msg.data.status === 'found' && msg.data.lyrics) {
         lyrics = msg.data.lyrics;
         // Строим DOM, когда пришла новая лирика
         initLyricsDOM();
+      } else {
+        // === ВАЖНО: Очищаем старую лирику, если новая не найдена ===
+        lyrics = null;
+        lyricsEl.innerHTML = '';
+        if (lyricsWrapper) lyricsWrapper = null;
+        // ==========================================================
       }
       break;
 
@@ -272,11 +290,28 @@ function handleMessage(msg) {
 
     case 'time':
       serverTime = msg.data;
-      serverTimestamp = Date.now();
+      if (isPlaying) {
+        serverTimestamp = Date.now();
+      }
       break;
 
     case 'bpm':
       bpmEl.textContent = `${Math.round(msg.data)} BPM`;
+      break;
+
+    case 'status':
+      if (typeof msg.data.isPlaying !== 'undefined') {
+        isPlaying = msg.data.isPlaying;
+        
+        if (!isPlaying) {
+            serverTimestamp = 0; 
+            renderLyrics(serverTime);
+            updateProgress(serverTime);
+            currentTimeEl.textContent = formatTime(serverTime);
+        } else {
+            serverTimestamp = Date.now();
+        }
+      }
       break;
   }
 }
