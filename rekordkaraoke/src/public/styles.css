@@ -4,29 +4,25 @@
   box-sizing: border-box;
 }
 
-
 html {
-  /* Макет рисовали под 2K: на ширине ~2560px получаем 16px (1rem).
-     На маленьких экранах рем плавно уменьшается до 12px. */
+  /* Адаптивный размер шрифта */
   font-size: clamp(12px, 1vw, 16px);
 }
 
 :root {
-  /* Единицы в rem. При html{font-size:16px} (2K) совпадает с макетом:
-     16px=1rem, 32px=2rem, 48px=3rem, 128px=8rem. */
   --space-16: 1rem;
   --space-32: 2rem;
   --space-48: 3rem;
   --space-128: 8rem;
-  --bar-min-h: 6.25rem; /* 100px на 2K */
-  --lyrics-max-w: clamp(20rem, 55vw, 87.5rem); /* 320px..1400px при 16px base */
-  --cover-max-w: 32rem; /* размер обложки на 2K */
-  --lyrics-fade-pad: 2.5rem; /* “воздух” сверху/снизу, чтобы не рубило строки */
+  --bar-min-h: 6.25rem;
+  --lyrics-max-w: clamp(20rem, 55vw, 87.5rem);
+  --cover-max-w: 32rem;
+  --lyrics-fade-pad: 2.5rem;
 }
 
 body {
   background: #121212;
-  background-image: url("bg-image.svg");
+  background-image: url("bg-image.svg"); /* Убедись, что файл существует, или убери */
   color: #fff;
   font-family: 'Segoe UI', system-ui, sans-serif;
   min-height: 100vh;
@@ -42,15 +38,11 @@ body {
     1fr
     minmax(var(--bar-min-h), auto);
   gap: var(--space-128);
-
-  /* 48px от края экрана на 2K.
-     Добавляем safe-area для мобилок с вырезами. */
   padding:
     calc(var(--space-48) + env(safe-area-inset-top))
     calc(var(--space-48) + env(safe-area-inset-right))
     calc(var(--space-48) + env(safe-area-inset-bottom))
     calc(var(--space-48) + env(safe-area-inset-left));
-
   overflow: hidden;
 }
 
@@ -80,26 +72,18 @@ body {
 }
 
 #lyrics-container {
-  /* Основной блок: обложка слева, текст справа */
   display: grid;
-  /* Держим группу (обложка+текст) по центру, а не растягиваем правую колонку на всю ширину.
-     Так активная строка визуально оказывается “в центре” правого блока, а не уезжает вправо. */
   grid-template-columns:
     minmax(18rem, var(--cover-max-w))
     minmax(0, var(--lyrics-max-w));
   justify-content: center;
   align-items: center;
   column-gap: var(--space-128);
-
-  /* Внутренние отступы “128” из макета */
   padding: var(--space-128);
-
   min-height: 0;
   overflow: hidden;
 }
 
-
-/* Адаптация: на более узких экранах уменьшаем “128” и складываем колонки */
 @media (max-width: 80rem) {
   #lyrics-container {
     column-gap: var(--space-48);
@@ -111,7 +95,6 @@ body {
   #lyrics-container {
     grid-template-columns: 1fr;
   }
-
   #cover {
     max-width: 28rem;
   }
@@ -120,17 +103,14 @@ body {
 #lyrics-status {
   color: #666;
   font-size: 1rem;
-  /* Не должен сдвигать центр лирики, когда пустой */
   margin-bottom: var(--space-16);
 }
-
-/* Когда статус пустой — убираем из потока, чтобы не ломал вертикальное центрирование */
 #lyrics-status:empty {
   display: none;
   margin-bottom: 0;
 }
 
-/* Левая колонка — обложка */
+/* Обложка */
 #cover-panel {
   display: flex;
   align-items: center;
@@ -154,8 +134,6 @@ body {
   display: block;
   object-fit: cover;
 }
-
-/* Если src ещё не задан — не показываем “битую картинку” */
 #cover-image:not([src]),
 #cover-image[src=""] {
   display: none;
@@ -164,12 +142,12 @@ body {
 /* Правая колонка — лирика */
 #lyrics-panel {
   min-height: 0;
-  /* Не режем свечение активной строки */
   overflow: visible;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  height: 100%;
 }
 
 #lyrics {
@@ -178,111 +156,89 @@ body {
   margin-inline: auto;
   position: relative;
 
-  /* Мягкое “обрезание”: делаем запас сверху/снизу и плавный fade, чтобы строки не рубились */
+  /* Ограничиваем высоту области видимости текста */
+  height: 100%; 
+  max-height: 65vh; 
+  
   padding-block: var(--lyrics-fade-pad);
-  overflow: hidden;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 18%,
-    #000 82%,
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 18%,
-    #000 82%,
-    transparent
-  );
+  overflow: hidden; /* Скрываем невлезающее */
+  
+  /* Маска прозрачности сверху и снизу */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 85%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 15%, #000 85%, transparent);
 
-  /* Чтобы текст красиво центровался по высоте в правой колонке */
-  flex: 1;
-  min-height: 0;
+  display: block; 
+}
+
+/* Враппер, который мы будем двигать через transform */
+.lyrics-wrapper {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  align-items: center;
+  /* Плавность движения всего списка */
+  transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1); 
+  will-change: transform;
+  
+  /* Начальный отступ (необязательно, JS пересчитает) */
+  padding-top: 30vh; 
+  padding-bottom: 30vh;
 }
 
 .lyric-line {
-  font-size: clamp(1.15rem, 1.3vw, 2rem);
-  line-height: 1.8;
-  color: #3a3a3a;
-  padding: 0.3rem 0;
-  opacity: 0;
-  transform: translateY(20px) scale(0.95);
-  transition: 
-    opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1),
-    transform 0.5s cubic-bezier(0.4, 0, 0.2, 1),
-    color 0.4s ease,
-    font-size 0.4s cubic-bezier(0.4, 0, 0.2, 1),
-    text-shadow 0.4s ease,
-    filter 0.4s ease;
-  filter: blur(0px);
-}
+  /* Базовый размер шрифта (не анимируем font-size!) */
+  font-size: clamp(1.4rem, 1.6vw, 2.4rem);
+  
+  /* === ФИКС ОБРЕЗАНИЯ И ПЕРЕНОСОВ === */
+  line-height: 1.3; 
+  white-space: pre-wrap;       /* Разрешаем перенос */
+  word-wrap: break-word;       /* Разрешаем разрыв слов */
+  overflow-wrap: break-word;   /* Современный стандарт */
+  max-width: 60%;              /* Оставляем место по бокам, чтобы при scale не вылезало */
+  margin-inline: auto;         /* Центрируем, т.к. ширина < 100% */
+  /* =================================== */
 
-.lyric-line.visible {
-  opacity: 1;
-  transform: translateY(0) scale(1);
+  color: #3a3a3a;
+  padding: 1rem 0; /* Чуть больше воздуха между строками */
+  
+  opacity: 0.3;
+  transform: scale(0.9);
+  filter: blur(1.5px);
+  
+  /* Анимация свойств строки */
+  transition: 
+    opacity 0.4s ease,
+    transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+    color 0.3s ease,
+    filter 0.3s ease,
+    text-shadow 0.3s ease;
+    
+  will-change: transform, opacity, filter;
+  transform-origin: center center;
+  cursor: default;
 }
 
 .lyric-line.active {
   color: #fff;
-  font-size: clamp(1.6rem, 1.8vw, 2.8rem);
+  opacity: 1;
+  transform: scale(1.35); /* Увеличение активной строки */
+  filter: blur(0);
+  
   text-shadow: 
-    0 0 30px rgba(255, 255, 255, 0.4),
-    0 0 60px rgba(139, 92, 246, 0.3);
-  animation: glow-pulse 2s ease-in-out infinite;
+    0 0 20px rgba(255, 255, 255, 0.5),
+    0 0 40px rgba(139, 92, 246, 0.4);
 }
 
 .lyric-line.next {
-  color: #888;
-  font-size: clamp(1.35rem, 1.5vw, 2.2rem);
-}
-
-.lyric-line.upcoming {
-  color: #555;
+  color: #ccc;
+  opacity: 0.7;
+  transform: scale(1.0);
+  filter: blur(0);
 }
 
 .lyric-line.past {
-  color: #333;
-  font-size: clamp(0.95rem, 1.1vw, 1.6rem);
-  opacity: 0.6;
-  filter: blur(1px);
-}
-
-.lyric-line.fading-out {
-  opacity: 0;
-  transform: translateY(-20px) scale(0.9);
-}
-
-@keyframes glow-pulse {
-  0%, 100% {
-    text-shadow: 
-      0 0 30px rgba(255, 255, 255, 0.4),
-      0 0 60px rgba(139, 92, 246, 0.3);
-  }
-  50% {
-    text-shadow: 
-      0 0 40px rgba(255, 255, 255, 0.6),
-      0 0 80px rgba(139, 92, 246, 0.5);
-  }
-}
-
-/* Появление новой лирики */
-@keyframes slide-in {
-  from {
-    opacity: 0;
-    transform: translateY(30px) scale(0.9);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-.lyric-line.entering {
-  animation: slide-in 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  opacity: 0.15;
+  transform: scale(0.85);
+  filter: blur(2px);
 }
 
 footer#bottom-bar {
@@ -307,7 +263,7 @@ footer#bottom-bar {
   background: linear-gradient(90deg, #6366f1, #8b5cf6);
   border-radius: 2px;
   width: 0%;
-  transition: width 0.15s linear;
+  transition: width 0.1s linear;
 }
 
 #time-info {
@@ -319,14 +275,8 @@ footer#bottom-bar {
 }
 
 /* Статусы */
-.status-loading #lyrics-status::after {
-  content: 'Searching lyrics...';
-}
-
-.status-not_found #lyrics-status::after {
-  content: '';
-}
-
+.status-loading #lyrics-status::after { content: 'Searching lyrics...'; }
+.status-not_found #lyrics-status::after { content: ''; }
 .status-not_found #lyrics::after {
   content: attr(data-fallback);
   font-size: clamp(1.4rem, 2vw, 3rem);
@@ -334,15 +284,10 @@ footer#bottom-bar {
   display: block;
   text-align: center;
   padding: var(--space-32);
+  margin-top: 10vh;
 }
-
-.status-found #lyrics-status {
-  display: none;
-}
-
-.status-none #lyrics-status::after {
-  content: '';
-}
+.status-found #lyrics-status { display: none; }
+.status-none #lyrics-status::after { content: ''; }
 
 /* Индикатор подключения */
 #app::before {
@@ -358,16 +303,12 @@ footer#bottom-bar {
   transition: all 0.3s ease;
   z-index: 100;
 }
-
 #app.disconnected::before {
   background: #ef4444;
   box-shadow: 0 0 8px #ef4444;
   animation: pulse 1s infinite;
 }
-
-#app.disconnected {
-  opacity: 0.6;
-}
+#app.disconnected { opacity: 0.6; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
