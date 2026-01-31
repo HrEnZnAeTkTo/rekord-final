@@ -20,8 +20,8 @@ class UIReader:
     def __init__(self):
         self.app_title = ".*rekordbox.*"
         self.anchor = "4Deck Horizontal"
-        self.d1_indices = (131, 133) 
-        self.d2_indices = (155, 157)
+        self.d1_indices = (133, 135) 
+        self.d2_indices = (156, 158)
         self.window = None
         self.container = None
 
